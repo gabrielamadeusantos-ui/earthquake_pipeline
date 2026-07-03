@@ -36,6 +36,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          MIN_MAGNITUDE: ${{ secrets.MIN_MAGNITUDE || '3.0' }}
+          MIN_MAGNITUDE: ${{ secrets.MIN_MAGNITUDE || '4.0' }}
         run: |
           python scripts/update_load.py
