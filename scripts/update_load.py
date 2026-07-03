@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import time
 import hashlib
-import re
+from dateutil import parser
 
 # ==========================================
 # CONFIGURAÇÕES
@@ -27,16 +27,12 @@ MAX_MAGNITUDE = None
 MIN_DEPTH = None
 MAX_DEPTH = None
 
-LAT_LON_ROUND = 0          # 0 = ~111 km
+LAT_LON_ROUND = 0
 TIME_WINDOW = '1h'
-BATCH_SIZE = 500
 CACHE_FILE = "last_run_cache.json"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2
 
-# ==========================================
-# VALIDAÇÃO
-# ==========================================
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ Erro: Configure SUPABASE_URL e SUPABASE_KEY no .env")
     exit(1)
@@ -46,30 +42,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 # FUNÇÕES AUXILIARES
 # ==========================================
-def parse_iso_datetime(date_str):
-    """Tenta parsear string ISO com milissegundos variáveis."""
-    if not date_str:
-        return None
-    # Remove o 'Z' e substitui por +00:00 se necessário
-    if date_str.endswith('Z'):
-        date_str = date_str[:-1] + '+00:00'
-    # Tenta remover milissegundos extras (caso tenha mais de 6 dígitos)
-    # Exemplo: '2026-07-03T14:57:35.18+00:00' -> '2026-07-03T14:57:35.180000+00:00'
-    match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)([+-]\d{2}:\d{2})', date_str)
-    if match:
-        base, frac, tz = match.groups()
-        # Preenche com zeros até 6 dígitos
-        frac = frac.ljust(6, '0')[:6]
-        date_str = f"{base}.{frac}{tz}"
-    try:
-        return datetime.fromisoformat(date_str)
-    except ValueError:
-        # Fallback: tenta sem os milissegundos
-        try:
-            return datetime.fromisoformat(date_str.split('.')[0] + date_str[19:])
-        except:
-            return None
-
 def convert_ms_to_datetime(ms: int) -> str | None:
     if not ms or pd.isna(ms):
         return None
@@ -145,6 +117,15 @@ def load_last_run_date() -> str | None:
         print(f"⚠️ Não foi possível ler cache: {e}")
     return None
 
+def parse_flexible_datetime(dt_str: str) -> datetime | None:
+    try:
+        return parser.parse(dt_str)
+    except:
+        try:
+            return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+        except:
+            return None
+
 def get_last_event_time() -> str | None:
     try:
         print("📡 Buscando último evento no Supabase...")
@@ -158,20 +139,15 @@ def get_last_event_time() -> str | None:
         data = response.data
         if data and data[0].get("event_time"):
             last_time = data[0]["event_time"]
-            dt = parse_iso_datetime(last_time)
-            if dt is None:
+            dt = parse_flexible_datetime(last_time)
+            if dt:
+                dt = dt - timedelta(hours=1)
+                result = dt.isoformat()
+                save_last_run_date(result)
+                print(f"✅ Último evento encontrado: {result}")
+                return result
+            else:
                 print(f"⚠️ Não foi possível parsear a data: {last_time}")
-                # Tenta usar o cache
-                cached = load_last_run_date()
-                if cached:
-                    print(f"📁 Usando data do cache: {cached}")
-                    return cached
-                return None
-            dt = dt - timedelta(hours=1)
-            result = dt.isoformat()
-            save_last_run_date(result)
-            print(f"✅ Último evento encontrado: {result}")
-            return result
     except Exception as e:
         print(f"⚠️ Falha na consulta ao banco: {e}")
 
@@ -301,7 +277,7 @@ def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     return result
 
 # ==========================================
-# MERGE EM LOTE (CORRIGIDO)
+# MERGE EM LOTE (CORRIGIDO COM LOGS)
 # ==========================================
 def batch_merge(records: list) -> int:
     if not records:
@@ -376,27 +352,57 @@ def batch_merge(records: list) -> int:
 
     return len(records)
 
+# ==========================================
+# FUNÇÃO DE CONSTRUÇÃO DE UPDATE (CORRIGIDA)
+# ==========================================
 def build_update_data(existing: dict, new: dict) -> dict:
-    # Garantir que sejam listas, mesmo se None
-    existing_ids = existing.get('original_event_ids') or []
-    existing_links = existing.get('original_links') or []
-    new_id = new['event_id']
+    # Garante que existing seja um dicionário
+    if not existing:
+        existing = {}
+
+    # Extrai e trata listas
+    existing_ids = existing.get('original_event_ids')
+    if existing_ids is None:
+        existing_ids = []
+    elif not isinstance(existing_ids, list):
+        existing_ids = list(existing_ids) if existing_ids else []
+
+    existing_links = existing.get('original_links')
+    if existing_links is None:
+        existing_links = []
+    elif not isinstance(existing_links, list):
+        existing_links = list(existing_links) if existing_links else []
+
+    new_id = new.get('event_id')
     new_link = new.get('official_link')
 
-    if new_id not in existing_ids:
+    # Atualiza listas
+    if new_id and new_id not in existing_ids:
         new_ids = existing_ids + [new_id]
         new_links = existing_links + ([new_link] if new_link else [])
     else:
         new_ids = existing_ids
         new_links = existing_links
 
+    # unified_count: garante que seja int
+    unified_count = existing.get('unified_count')
+    if unified_count is None:
+        unified_count = 0
+    # Se for string, converte
+    if isinstance(unified_count, str):
+        try:
+            unified_count = int(unified_count)
+        except:
+            unified_count = 0
+
     update_data = {
         'original_event_ids': new_ids,
         'original_links': new_links,
-        'unified_count': existing.get('unified_count', 0) + 1,
+        'unified_count': unified_count + 1,
         'last_updated': datetime.now(timezone.utc).isoformat()
     }
 
+    # Verifica se nova magnitude é maior
     new_mag = new.get('magnitude', 0)
     old_mag = existing.get('magnitude', 0)
     if new_mag > old_mag:
@@ -410,6 +416,7 @@ def build_update_data(existing: dict, new: dict) -> dict:
         update_data['official_link'] = new.get('official_link')
         if new.get('unified_id'):
             update_data['unified_id'] = new['unified_id']
+
     return update_data
 
 # ==========================================
