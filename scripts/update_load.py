@@ -33,6 +33,9 @@ CACHE_FILE = "last_run_cache.json"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2
 
+# ==========================================
+# VALIDAÇÃO
+# ==========================================
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ Erro: Configure SUPABASE_URL e SUPABASE_KEY no .env")
     exit(1)
@@ -277,7 +280,7 @@ def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     return result
 
 # ==========================================
-# MERGE EM LOTE (CORRIGIDO COM LOGS)
+# MERGE EM LOTE COM UPDATES AGRUPADOS
 # ==========================================
 def batch_merge(records: list) -> int:
     if not records:
@@ -305,7 +308,6 @@ def batch_merge(records: list) -> int:
     for rec in records:
         eid = rec['event_id']
         uid = rec.get('unified_id')
-
         if eid in existing_by_event:
             to_update_by_event.append(rec)
         elif uid and uid in existing_by_unified:
@@ -315,6 +317,7 @@ def batch_merge(records: list) -> int:
 
     print(f"📌 Classificação: {len(to_insert)} novos, {len(to_update_by_event)} atualizar por event_id, {len(to_update_by_unified)} atualizar por unified_id")
 
+    # Inserir novos em lote
     if to_insert:
         insert_records = []
         for rec in to_insert:
@@ -334,66 +337,62 @@ def batch_merge(records: list) -> int:
                 except Exception as e2:
                     print(f"❌ Falha ao inserir {rec['event_id']}: {e2}")
 
-    for rec in to_update_by_event:
-        existing = existing_by_event[rec['event_id']]
-        update_data = build_update_data(existing, rec)
-        try:
-            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute()
-        except Exception as e:
-            print(f"❌ Erro ao atualizar event_id {rec['event_id']}: {e}")
+    # Atualizar por event_id em lotes
+    if to_update_by_event:
+        update_data_list = []
+        for rec in to_update_by_event:
+            existing = existing_by_event[rec['event_id']]
+            update_data = build_update_data(existing, rec)
+            update_data_list.append((rec['event_id'], update_data))
+        # Executa updates em lotes de 50
+        batch_size = 50
+        for i in range(0, len(update_data_list), batch_size):
+            batch = update_data_list[i:i+batch_size]
+            for event_id, data in batch:
+                try:
+                    supabase.table(TABLE_NAME).update(data).eq("event_id", event_id).execute()
+                except Exception as e:
+                    print(f"❌ Erro ao atualizar event_id {event_id}: {e}")
 
-    for rec in to_update_by_unified:
-        existing = existing_by_unified[rec['unified_id']]
-        update_data = build_update_data(existing, rec)
-        try:
-            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute()
-        except Exception as e:
-            print(f"❌ Erro ao atualizar unified_id {rec['unified_id']}: {e}")
+    # Atualizar por unified_id em lotes
+    if to_update_by_unified:
+        update_data_list = []
+        for rec in to_update_by_unified:
+            existing = existing_by_unified[rec['unified_id']]
+            update_data = build_update_data(existing, rec)
+            update_data_list.append((rec['unified_id'], update_data))
+        batch_size = 50
+        for i in range(0, len(update_data_list), batch_size):
+            batch = update_data_list[i:i+batch_size]
+            for unified_id, data in batch:
+                try:
+                    supabase.table(TABLE_NAME).update(data).eq("unified_id", unified_id).execute()
+                except Exception as e:
+                    print(f"❌ Erro ao atualizar unified_id {unified_id}: {e}")
 
     return len(records)
 
-# ==========================================
-# FUNÇÃO DE CONSTRUÇÃO DE UPDATE (CORRIGIDA)
-# ==========================================
 def build_update_data(existing: dict, new: dict) -> dict:
-    # Garante que existing seja um dicionário
-    if not existing:
-        existing = {}
-
-    # Extrai e trata listas
     existing_ids = existing.get('original_event_ids')
     if existing_ids is None:
         existing_ids = []
-    elif not isinstance(existing_ids, list):
-        existing_ids = list(existing_ids) if existing_ids else []
-
     existing_links = existing.get('original_links')
     if existing_links is None:
         existing_links = []
-    elif not isinstance(existing_links, list):
-        existing_links = list(existing_links) if existing_links else []
 
-    new_id = new.get('event_id')
+    new_id = new['event_id']
     new_link = new.get('official_link')
 
-    # Atualiza listas
-    if new_id and new_id not in existing_ids:
+    if new_id not in existing_ids:
         new_ids = existing_ids + [new_id]
         new_links = existing_links + ([new_link] if new_link else [])
     else:
         new_ids = existing_ids
         new_links = existing_links
 
-    # unified_count: garante que seja int
     unified_count = existing.get('unified_count')
     if unified_count is None:
         unified_count = 0
-    # Se for string, converte
-    if isinstance(unified_count, str):
-        try:
-            unified_count = int(unified_count)
-        except:
-            unified_count = 0
 
     update_data = {
         'original_event_ids': new_ids,
@@ -402,7 +401,6 @@ def build_update_data(existing: dict, new: dict) -> dict:
         'last_updated': datetime.now(timezone.utc).isoformat()
     }
 
-    # Verifica se nova magnitude é maior
     new_mag = new.get('magnitude', 0)
     old_mag = existing.get('magnitude', 0)
     if new_mag > old_mag:
@@ -416,7 +414,6 @@ def build_update_data(existing: dict, new: dict) -> dict:
         update_data['official_link'] = new.get('official_link')
         if new.get('unified_id'):
             update_data['unified_id'] = new['unified_id']
-
     return update_data
 
 # ==========================================
