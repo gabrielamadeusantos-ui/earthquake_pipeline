@@ -10,7 +10,6 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import time
 import hashlib
-from collections import defaultdict
 
 # ==========================================
 # CONFIGURAÇÕES
@@ -22,12 +21,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 TABLE_NAME = "earthquakes_full_record"
 USGS_API_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
-MIN_MAGNITUDE = 3.0
+MIN_MAGNITUDE = float(os.getenv("MIN_MAGNITUDE", 3.0))
 MAX_MAGNITUDE = None
 MIN_DEPTH = None
 MAX_DEPTH = None
 
-LAT_LON_ROUND = 0
+LAT_LON_ROUND = 0          # 0 = ~111 km
 TIME_WINDOW = '1h'
 BATCH_SIZE = 500
 CACHE_FILE = "last_run_cache.json"
@@ -124,12 +123,13 @@ def load_last_run_date() -> str | None:
 def get_last_event_time() -> str | None:
     try:
         print("📡 Buscando último evento no Supabase...")
+        # Adiciona um timeout explícito e ordenação com índice
         response = (
             supabase.table(TABLE_NAME)
             .select("event_time")
             .order("event_time", desc=True)
             .limit(1)
-            .execute()
+            .execute(timeout=10)  # timeout em segundos
         )
         data = response.data
         if data and data[0].get("event_time"):
@@ -186,7 +186,7 @@ def fetch_usgs_incremental(starttime: str) -> list:
     return []
 
 # ==========================================
-# TRANSFORMAÇÃO E ENRIQUECIMENTO
+# TRANSFORMAÇÃO E ENRIQUECIMENTO (CORRIGIDA)
 # ==========================================
 def transform_and_enrich(features: list) -> list:
     if not features:
@@ -224,17 +224,22 @@ def transform_and_enrich(features: list) -> list:
 
     df = pd.DataFrame(records)
 
+    # Conversões numéricas
     df["magnitude"] = pd.to_numeric(df["magnitude"], errors="coerce").fillna(0.0)
     df["depth_km"] = pd.to_numeric(df["depth_km"], errors="coerce").fillna(0.0)
     for col in ["felt", "significance", "tsunami"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-    df["event_day"] = pd.to_datetime(df["event_time"], errors='coerce').dt.date.astype(str)
+    # Data do evento – trata NaT corretamente
+    df["event_day"] = pd.to_datetime(df["event_time"], errors='coerce').dt.date
+    df["event_day"] = df["event_day"].apply(lambda x: x.isoformat() if pd.notna(x) else None)
+
     df["place_clean"] = df["place"].apply(clean_place)
     df["magnitude_tier"] = df["magnitude"].apply(get_magnitude_tier)
     df["depth_category"] = df["depth_km"].apply(get_depth_category)
     df["lat_long"] = df["latitude"].astype(str) + "," + df["longitude"].astype(str)
 
+    # Geocodificação
     valid_mask = df["latitude"].notna() & df["longitude"].notna()
     if valid_mask.any():
         coords_list = list(zip(df.loc[valid_mask, "latitude"], df.loc[valid_mask, "longitude"]))
@@ -245,118 +250,114 @@ def transform_and_enrich(features: list) -> list:
     else:
         df["country_code"] = df["country_name"] = df["continent"] = "Unknown"
 
+    # Substitui NaNs por None para JSON
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.astype(object).where(pd.notnull(df), None)
 
     return df.to_dict(orient='records')
 
 # ==========================================
-# MERGE EM LOTE (OTIMIZADO)
+# FUNÇÕES DE CONSULTA EM LOTE (CORRIGIDAS)
+# ==========================================
+def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
+    """Retorna dicionário {id: registro} para os IDs, consultando em lotes de 200."""
+    result = {}
+    batch_size = 200
+    for i in range(0, len(ids_list), batch_size):
+        batch = ids_list[i:i+batch_size]
+        try:
+            resp = supabase.table(table).select("*").in_(column, batch).execute(timeout=10)
+            for row in resp.data:
+                result[row[column]] = row
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar lote de {column}: {e}")
+    return result
+
+# ==========================================
+# MERGE EM LOTE (CORRIGIDO)
 # ==========================================
 def batch_merge(records: list) -> int:
-    """
-    Processa todos os registros de uma vez, reduzindo consultas ao Supabase.
-    Retorna o número de registros processados com sucesso.
-    """
     if not records:
         return 0
 
-    # 1. Extrair todos os event_ids e unified_ids
+    # 1. Extrair IDs
     event_ids = [r['event_id'] for r in records if r.get('event_id')]
     unified_ids = [r['unified_id'] for r in records if r.get('unified_id')]
 
-    # 2. Buscar todos os registros existentes por event_id em uma única consulta
-    existing_by_event = {}
-    if event_ids:
-        try:
-            resp = supabase.table(TABLE_NAME).select("*").in_("event_id", event_ids).execute()
-            for row in resp.data:
-                existing_by_event[row['event_id']] = row
-        except Exception as e:
-            print(f"❌ Erro ao buscar event_ids em lote: {e}")
-            # Fallback: processar individualmente? Vamos apenas continuar com o que temos.
+    # 2. Buscar existentes por event_id (em lotes)
+    print(f"🔍 Buscando {len(event_ids)} event_ids no banco...")
+    existing_by_event = fetch_existing_by_ids(event_ids, 'event_id')
 
-    # 3. Buscar todos os registros existentes por unified_id (que não foram encontrados por event_id)
-    existing_by_unified = {}
-    unified_ids_to_fetch = [uid for uid in unified_ids if uid and uid not in [r.get('unified_id') for r in existing_by_event.values()]]
-    if unified_ids_to_fetch:
-        try:
-            resp = supabase.table(TABLE_NAME).select("*").in_("unified_id", unified_ids_to_fetch).execute()
-            for row in resp.data:
-                existing_by_unified[row['unified_id']] = row
-        except Exception as e:
-            print(f"❌ Erro ao buscar unified_ids em lote: {e}")
+    # 3. Buscar existentes por unified_id (apenas para os que não foram encontrados por event_id)
+    unified_ids_to_fetch = []
+    for rec in records:
+        uid = rec.get('unified_id')
+        eid = rec.get('event_id')
+        if uid and eid not in existing_by_event:
+            unified_ids_to_fetch.append(uid)
+    print(f"🔍 Buscando {len(unified_ids_to_fetch)} unified_ids no banco...")
+    existing_by_unified = fetch_existing_by_ids(unified_ids_to_fetch, 'unified_id')
 
-    # 4. Separar registros em: novos, atualizar por event_id, atualizar por unified_id
+    # 4. Classificar registros
     to_insert = []
     to_update_by_event = []
     to_update_by_unified = []
 
     for rec in records:
-        event_id = rec.get('event_id')
-        unified_id = rec.get('unified_id')
+        eid = rec['event_id']
+        uid = rec.get('unified_id')
 
-        # Se já existe por event_id
-        if event_id in existing_by_event:
+        if eid in existing_by_event:
             to_update_by_event.append(rec)
-            continue
-
-        # Se já existe por unified_id (e não por event_id)
-        if unified_id and unified_id in existing_by_unified:
+        elif uid and uid in existing_by_unified:
             to_update_by_unified.append(rec)
-            continue
+        else:
+            to_insert.append(rec)
 
-        # Novo registro
-        to_insert.append(rec)
+    print(f"📌 Classificação: {len(to_insert)} novos, {len(to_update_by_event)} atualizar por event_id, {len(to_update_by_unified)} atualizar por unified_id")
 
-    # 5. Inserir novos registros em lote
+    # 5. Inserir novos em lote
     if to_insert:
+        insert_records = []
+        for rec in to_insert:
+            insert_rec = rec.copy()
+            insert_rec['unified_count'] = 1
+            insert_rec['original_event_ids'] = [rec['event_id']]
+            insert_rec['original_links'] = [rec.get('official_link')] if rec.get('official_link') else []
+            insert_records.append(insert_rec)
         try:
-            # Prepara os registros para inserção com campos adicionais
-            insert_records = []
-            for rec in to_insert:
-                insert_rec = rec.copy()
-                insert_rec['unified_count'] = 1
-                insert_rec['original_event_ids'] = [rec['event_id']]
-                insert_rec['original_links'] = [rec.get('official_link')] if rec.get('official_link') else []
-                insert_records.append(insert_rec)
-            supabase.table(TABLE_NAME).insert(insert_records).execute()
+            supabase.table(TABLE_NAME).insert(insert_records).execute(timeout=30)
             print(f"✅ Inseridos {len(to_insert)} novos registros em lote.")
         except Exception as e:
             print(f"❌ Erro ao inserir lote: {e}")
-            # Fallback: tentar inserir um a um
-            for rec in to_insert:
+            # Fallback: inserir individualmente
+            for rec in insert_records:
                 try:
-                    supabase.table(TABLE_NAME).insert(rec).execute()
+                    supabase.table(TABLE_NAME).insert(rec).execute(timeout=10)
                 except Exception as e2:
                     print(f"❌ Falha ao inserir {rec['event_id']}: {e2}")
 
-    # 6. Atualizar registros existentes por event_id
+    # 6. Atualizar por event_id
     for rec in to_update_by_event:
         existing = existing_by_event[rec['event_id']]
-        # Merge dos campos
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute()
+            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute(timeout=10)
         except Exception as e:
             print(f"❌ Erro ao atualizar event_id {rec['event_id']}: {e}")
 
-    # 7. Atualizar registros existentes por unified_id
+    # 7. Atualizar por unified_id
     for rec in to_update_by_unified:
         existing = existing_by_unified[rec['unified_id']]
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute()
+            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute(timeout=10)
         except Exception as e:
             print(f"❌ Erro ao atualizar unified_id {rec['unified_id']}: {e}")
 
     return len(records)
 
 def build_update_data(existing: dict, new: dict) -> dict:
-    """
-    Constrói o dicionário de atualização mesclando o registro existente com o novo.
-    Segue a mesma lógica do merge_event original.
-    """
     existing_ids = existing.get('original_event_ids', [])
     existing_links = existing.get('original_links', [])
     new_id = new['event_id']
@@ -376,7 +377,7 @@ def build_update_data(existing: dict, new: dict) -> dict:
         'last_updated': datetime.now(timezone.utc).isoformat()
     }
 
-    # Atualiza campos principais se a nova magnitude for maior
+    # Atualiza campos principais se nova magnitude for maior
     new_mag = new.get('magnitude', 0)
     old_mag = existing.get('magnitude', 0)
     if new_mag > old_mag:
@@ -384,13 +385,12 @@ def build_update_data(existing: dict, new: dict) -> dict:
                       'significance', 'alert', 'tsunami', 'felt', 'event_type',
                       'event_day', 'place_clean', 'magnitude_tier', 'depth_category',
                       'lat_long', 'country_code', 'country_name', 'continent']:
-            if field in new:
+            if field in new and new[field] is not None:
                 update_data[field] = new[field]
         update_data['magnitude'] = new['magnitude']
         update_data['official_link'] = new.get('official_link')
         if new.get('unified_id'):
             update_data['unified_id'] = new['unified_id']
-
     return update_data
 
 # ==========================================
@@ -398,7 +398,7 @@ def build_update_data(existing: dict, new: dict) -> dict:
 # ==========================================
 def run_update():
     print("=" * 70)
-    print("🚀 INICIANDO UPDATE LOAD (OTIMIZADO - BATCH)")
+    print("🚀 INICIANDO UPDATE LOAD (OTIMIZADO - BATCH CORRIGIDO)")
     print("=" * 70)
     print(f"📋 Configurações:")
     print(f"   - Magnitude mínima: {MIN_MAGNITUDE}")
@@ -427,6 +427,7 @@ def run_update():
     elapsed = time.time() - t0
 
     if success_count > 0:
+        # Atualiza cache com a data do evento mais recente
         max_time = max([r.get('event_time') for r in records if r.get('event_time')])
         if max_time:
             save_last_run_date(max_time)
