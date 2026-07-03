@@ -123,13 +123,12 @@ def load_last_run_date() -> str | None:
 def get_last_event_time() -> str | None:
     try:
         print("📡 Buscando último evento no Supabase...")
-        # Adiciona um timeout explícito e ordenação com índice
         response = (
             supabase.table(TABLE_NAME)
             .select("event_time")
             .order("event_time", desc=True)
             .limit(1)
-            .execute(timeout=10)  # timeout em segundos
+            .execute()  # sem timeout
         )
         data = response.data
         if data and data[0].get("event_time"):
@@ -257,7 +256,7 @@ def transform_and_enrich(features: list) -> list:
     return df.to_dict(orient='records')
 
 # ==========================================
-# FUNÇÕES DE CONSULTA EM LOTE (CORRIGIDAS)
+# FUNÇÕES DE CONSULTA EM LOTE (SEM TIMEOUT)
 # ==========================================
 def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     """Retorna dicionário {id: registro} para os IDs, consultando em lotes de 200."""
@@ -266,7 +265,7 @@ def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     for i in range(0, len(ids_list), batch_size):
         batch = ids_list[i:i+batch_size]
         try:
-            resp = supabase.table(table).select("*").in_(column, batch).execute(timeout=10)
+            resp = supabase.table(table).select("*").in_(column, batch).execute()  # sem timeout
             for row in resp.data:
                 result[row[column]] = row
         except Exception as e:
@@ -274,7 +273,7 @@ def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     return result
 
 # ==========================================
-# MERGE EM LOTE (CORRIGIDO)
+# MERGE EM LOTE (SEM TIMEOUT)
 # ==========================================
 def batch_merge(records: list) -> int:
     if not records:
@@ -326,14 +325,14 @@ def batch_merge(records: list) -> int:
             insert_rec['original_links'] = [rec.get('official_link')] if rec.get('official_link') else []
             insert_records.append(insert_rec)
         try:
-            supabase.table(TABLE_NAME).insert(insert_records).execute(timeout=30)
+            supabase.table(TABLE_NAME).insert(insert_records).execute()  # sem timeout
             print(f"✅ Inseridos {len(to_insert)} novos registros em lote.")
         except Exception as e:
             print(f"❌ Erro ao inserir lote: {e}")
             # Fallback: inserir individualmente
             for rec in insert_records:
                 try:
-                    supabase.table(TABLE_NAME).insert(rec).execute(timeout=10)
+                    supabase.table(TABLE_NAME).insert(rec).execute()  # sem timeout
                 except Exception as e2:
                     print(f"❌ Falha ao inserir {rec['event_id']}: {e2}")
 
@@ -342,7 +341,7 @@ def batch_merge(records: list) -> int:
         existing = existing_by_event[rec['event_id']]
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute(timeout=10)
+            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute()  # sem timeout
         except Exception as e:
             print(f"❌ Erro ao atualizar event_id {rec['event_id']}: {e}")
 
@@ -351,7 +350,7 @@ def batch_merge(records: list) -> int:
         existing = existing_by_unified[rec['unified_id']]
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute(timeout=10)
+            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute()  # sem timeout
         except Exception as e:
             print(f"❌ Erro ao atualizar unified_id {rec['unified_id']}: {e}")
 
@@ -398,7 +397,7 @@ def build_update_data(existing: dict, new: dict) -> dict:
 # ==========================================
 def run_update():
     print("=" * 70)
-    print("🚀 INICIANDO UPDATE LOAD (OTIMIZADO - BATCH CORRIGIDO)")
+    print("🚀 INICIANDO UPDATE LOAD (OTIMIZADO - SEM TIMEOUT)")
     print("=" * 70)
     print(f"📋 Configurações:")
     print(f"   - Magnitude mínima: {MIN_MAGNITUDE}")
