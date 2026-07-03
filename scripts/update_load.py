@@ -10,6 +10,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import time
 import hashlib
+import re
 
 # ==========================================
 # CONFIGURAÇÕES
@@ -43,8 +44,32 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================================
-# FUNÇÕES AUXILIARES (sem alterações)
+# FUNÇÕES AUXILIARES
 # ==========================================
+def parse_iso_datetime(date_str):
+    """Tenta parsear string ISO com milissegundos variáveis."""
+    if not date_str:
+        return None
+    # Remove o 'Z' e substitui por +00:00 se necessário
+    if date_str.endswith('Z'):
+        date_str = date_str[:-1] + '+00:00'
+    # Tenta remover milissegundos extras (caso tenha mais de 6 dígitos)
+    # Exemplo: '2026-07-03T14:57:35.18+00:00' -> '2026-07-03T14:57:35.180000+00:00'
+    match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)([+-]\d{2}:\d{2})', date_str)
+    if match:
+        base, frac, tz = match.groups()
+        # Preenche com zeros até 6 dígitos
+        frac = frac.ljust(6, '0')[:6]
+        date_str = f"{base}.{frac}{tz}"
+    try:
+        return datetime.fromisoformat(date_str)
+    except ValueError:
+        # Fallback: tenta sem os milissegundos
+        try:
+            return datetime.fromisoformat(date_str.split('.')[0] + date_str[19:])
+        except:
+            return None
+
 def convert_ms_to_datetime(ms: int) -> str | None:
     if not ms or pd.isna(ms):
         return None
@@ -128,12 +153,20 @@ def get_last_event_time() -> str | None:
             .select("event_time")
             .order("event_time", desc=True)
             .limit(1)
-            .execute()  # sem timeout
+            .execute()
         )
         data = response.data
         if data and data[0].get("event_time"):
             last_time = data[0]["event_time"]
-            dt = datetime.fromisoformat(last_time.replace('Z', '+00:00'))
+            dt = parse_iso_datetime(last_time)
+            if dt is None:
+                print(f"⚠️ Não foi possível parsear a data: {last_time}")
+                # Tenta usar o cache
+                cached = load_last_run_date()
+                if cached:
+                    print(f"📁 Usando data do cache: {cached}")
+                    return cached
+                return None
             dt = dt - timedelta(hours=1)
             result = dt.isoformat()
             save_last_run_date(result)
@@ -185,7 +218,7 @@ def fetch_usgs_incremental(starttime: str) -> list:
     return []
 
 # ==========================================
-# TRANSFORMAÇÃO E ENRIQUECIMENTO (CORRIGIDA)
+# TRANSFORMAÇÃO E ENRIQUECIMENTO
 # ==========================================
 def transform_and_enrich(features: list) -> list:
     if not features:
@@ -223,13 +256,11 @@ def transform_and_enrich(features: list) -> list:
 
     df = pd.DataFrame(records)
 
-    # Conversões numéricas
     df["magnitude"] = pd.to_numeric(df["magnitude"], errors="coerce").fillna(0.0)
     df["depth_km"] = pd.to_numeric(df["depth_km"], errors="coerce").fillna(0.0)
     for col in ["felt", "significance", "tsunami"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-    # Data do evento – trata NaT corretamente
     df["event_day"] = pd.to_datetime(df["event_time"], errors='coerce').dt.date
     df["event_day"] = df["event_day"].apply(lambda x: x.isoformat() if pd.notna(x) else None)
 
@@ -238,7 +269,6 @@ def transform_and_enrich(features: list) -> list:
     df["depth_category"] = df["depth_km"].apply(get_depth_category)
     df["lat_long"] = df["latitude"].astype(str) + "," + df["longitude"].astype(str)
 
-    # Geocodificação
     valid_mask = df["latitude"].notna() & df["longitude"].notna()
     if valid_mask.any():
         coords_list = list(zip(df.loc[valid_mask, "latitude"], df.loc[valid_mask, "longitude"]))
@@ -249,23 +279,21 @@ def transform_and_enrich(features: list) -> list:
     else:
         df["country_code"] = df["country_name"] = df["continent"] = "Unknown"
 
-    # Substitui NaNs por None para JSON
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.astype(object).where(pd.notnull(df), None)
 
     return df.to_dict(orient='records')
 
 # ==========================================
-# FUNÇÕES DE CONSULTA EM LOTE (SEM TIMEOUT)
+# FUNÇÕES DE CONSULTA EM LOTE
 # ==========================================
 def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
-    """Retorna dicionário {id: registro} para os IDs, consultando em lotes de 200."""
     result = {}
     batch_size = 200
     for i in range(0, len(ids_list), batch_size):
         batch = ids_list[i:i+batch_size]
         try:
-            resp = supabase.table(table).select("*").in_(column, batch).execute()  # sem timeout
+            resp = supabase.table(table).select("*").in_(column, batch).execute()
             for row in resp.data:
                 result[row[column]] = row
         except Exception as e:
@@ -273,21 +301,18 @@ def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     return result
 
 # ==========================================
-# MERGE EM LOTE (SEM TIMEOUT)
+# MERGE EM LOTE (CORRIGIDO)
 # ==========================================
 def batch_merge(records: list) -> int:
     if not records:
         return 0
 
-    # 1. Extrair IDs
     event_ids = [r['event_id'] for r in records if r.get('event_id')]
     unified_ids = [r['unified_id'] for r in records if r.get('unified_id')]
 
-    # 2. Buscar existentes por event_id (em lotes)
     print(f"🔍 Buscando {len(event_ids)} event_ids no banco...")
     existing_by_event = fetch_existing_by_ids(event_ids, 'event_id')
 
-    # 3. Buscar existentes por unified_id (apenas para os que não foram encontrados por event_id)
     unified_ids_to_fetch = []
     for rec in records:
         uid = rec.get('unified_id')
@@ -297,7 +322,6 @@ def batch_merge(records: list) -> int:
     print(f"🔍 Buscando {len(unified_ids_to_fetch)} unified_ids no banco...")
     existing_by_unified = fetch_existing_by_ids(unified_ids_to_fetch, 'unified_id')
 
-    # 4. Classificar registros
     to_insert = []
     to_update_by_event = []
     to_update_by_unified = []
@@ -315,7 +339,6 @@ def batch_merge(records: list) -> int:
 
     print(f"📌 Classificação: {len(to_insert)} novos, {len(to_update_by_event)} atualizar por event_id, {len(to_update_by_unified)} atualizar por unified_id")
 
-    # 5. Inserir novos em lote
     if to_insert:
         insert_records = []
         for rec in to_insert:
@@ -325,40 +348,38 @@ def batch_merge(records: list) -> int:
             insert_rec['original_links'] = [rec.get('official_link')] if rec.get('official_link') else []
             insert_records.append(insert_rec)
         try:
-            supabase.table(TABLE_NAME).insert(insert_records).execute()  # sem timeout
+            supabase.table(TABLE_NAME).insert(insert_records).execute()
             print(f"✅ Inseridos {len(to_insert)} novos registros em lote.")
         except Exception as e:
             print(f"❌ Erro ao inserir lote: {e}")
-            # Fallback: inserir individualmente
             for rec in insert_records:
                 try:
-                    supabase.table(TABLE_NAME).insert(rec).execute()  # sem timeout
+                    supabase.table(TABLE_NAME).insert(rec).execute()
                 except Exception as e2:
                     print(f"❌ Falha ao inserir {rec['event_id']}: {e2}")
 
-    # 6. Atualizar por event_id
     for rec in to_update_by_event:
         existing = existing_by_event[rec['event_id']]
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute()  # sem timeout
+            supabase.table(TABLE_NAME).update(update_data).eq("event_id", rec['event_id']).execute()
         except Exception as e:
             print(f"❌ Erro ao atualizar event_id {rec['event_id']}: {e}")
 
-    # 7. Atualizar por unified_id
     for rec in to_update_by_unified:
         existing = existing_by_unified[rec['unified_id']]
         update_data = build_update_data(existing, rec)
         try:
-            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute()  # sem timeout
+            supabase.table(TABLE_NAME).update(update_data).eq("unified_id", rec['unified_id']).execute()
         except Exception as e:
             print(f"❌ Erro ao atualizar unified_id {rec['unified_id']}: {e}")
 
     return len(records)
 
 def build_update_data(existing: dict, new: dict) -> dict:
-    existing_ids = existing.get('original_event_ids', [])
-    existing_links = existing.get('original_links', [])
+    # Garantir que sejam listas, mesmo se None
+    existing_ids = existing.get('original_event_ids') or []
+    existing_links = existing.get('original_links') or []
     new_id = new['event_id']
     new_link = new.get('official_link')
 
@@ -376,7 +397,6 @@ def build_update_data(existing: dict, new: dict) -> dict:
         'last_updated': datetime.now(timezone.utc).isoformat()
     }
 
-    # Atualiza campos principais se nova magnitude for maior
     new_mag = new.get('magnitude', 0)
     old_mag = existing.get('magnitude', 0)
     if new_mag > old_mag:
@@ -397,7 +417,7 @@ def build_update_data(existing: dict, new: dict) -> dict:
 # ==========================================
 def run_update():
     print("=" * 70)
-    print("🚀 INICIANDO UPDATE LOAD (OTIMIZADO - SEM TIMEOUT)")
+    print("🚀 INICIANDO UPDATE LOAD (VERSÃO FINAL CORRIGIDA)")
     print("=" * 70)
     print(f"📋 Configurações:")
     print(f"   - Magnitude mínima: {MIN_MAGNITUDE}")
@@ -426,7 +446,6 @@ def run_update():
     elapsed = time.time() - t0
 
     if success_count > 0:
-        # Atualiza cache com a data do evento mais recente
         max_time = max([r.get('event_time') for r in records if r.get('event_time')])
         if max_time:
             save_last_run_date(max_time)
