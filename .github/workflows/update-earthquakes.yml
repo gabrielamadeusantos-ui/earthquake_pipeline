@@ -3,7 +3,7 @@ name: Update Earthquake Data
 on:
   schedule:
     # Executa a cada 2 horas (minuto 0 das horas pares)
-    - cron: '0 */2 * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
