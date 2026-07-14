@@ -18,15 +18,6 @@ This project demonstrates the design and implementation of a production-style da
 
 ---
 
-## 🎯 Key Business Value
-
-* Provides real-time visibility into global seismic activity
-* Enables exploratory analysis through an interactive dashboard
-* Demonstrates scalable data ingestion patterns
-* Showcases production-ready engineering practices using free-tier tools
-
----
-
 ## 🧱 Architecture
 
 ```id="arch1"
@@ -142,7 +133,7 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 ## 📂 Project Structure
 
 ```id="struct1"
-├── src/
+├── scripts/
 │   ├── historic_load.py        # Batch ingestion (full load)
 │   ├── incremental_load.py     # Incremental pipeline
 │
