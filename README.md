@@ -175,9 +175,3 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 
 Gabriel Amadeu Santos
 Aspiring Data Engineer | Background in Audit & Analytics
-
----
-
-## 📄 License
-
-MIT License
