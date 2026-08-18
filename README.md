@@ -18,6 +18,18 @@ This project demonstrates the design and implementation of a production-style da
 
 ---
 
+## 🎥 Explanation Video
+
+<p align="center">
+  <a href="https://youtu.be/NdRpZVuqV8Y">
+    <img src="https://img.youtube.com/vi/NdRpZVuqV8Y/0.jpg" alt=""/>
+  </a>
+</p>
+
+> Click the image above to watch a short demo of the pipeline and dashboard in action.
+
+---
+
 ## 🧱 Architecture
 
 ```id="arch1"
@@ -39,6 +51,7 @@ USGS API → Python ETL → PostgreSQL (Supabase) → Looker Studio Dashboard
 | Visualization   | Google Looker Studio                            |
 
 ---
+
 ## ⚖️ Data Volume Optimization & Trade-offs
 
 Due to the high volume of seismic data generated globally, it was necessary to implement filtering and aggregation strategies to ensure the pipeline remained efficient, scalable, and within the limits of a free-tier infrastructure.
@@ -54,23 +67,19 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 
   * within the **same 1-hour window**, and
   * within the **same geographic area (rounded latitude/longitude, no decimal precision)**
-
-  are treated as a **single event cluster**.
-
-  This effectively groups nearby seismic activities into a broader spatial unit (square grid approximation), reducing noise and preventing excessive granularity.
+    are treated as a **single event cluster**.
 
 * **Aggregation with Data Preservation**
   Although events are grouped, the pipeline still stores:
 
   * the **total number of occurrences per cluster**
-  * enabling both **data reduction** and **analytical completeness**
 
 ---
 
 ### Impact
 
-* Substantial reduction in storage requirements
-* Improved query performance in PostgreSQL
+* Reduced storage requirements
+* Improved PostgreSQL query performance
 * Faster incremental loads and lower API usage
 * Maintained analytical value through aggregated metrics
 
@@ -79,7 +88,7 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 ### Trade-off Considerations
 
 * Loss of fine-grained geographic precision
-* Suitable for **macro-level analysis**, not for precise seismic research
+* Suitable for **macro-level analysis**, not precise seismic research
 
 ---
 
@@ -88,45 +97,44 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 ### 1. Historical Data Load (Batch Ingestion)
 
 * Extracts earthquakes with magnitude > 4.0 since 1996
-* Implements **monthly pagination** to handle API limits
+* Implements **monthly pagination**
 * Designed for **one-time execution**
-* Optimized for bulk insert performance
+* Optimized for bulk inserts
 
 ---
 
 ### 2. Incremental Data Pipeline
 
-* Queries latest timestamp from database (`MAX(time)`)
-* Fetches only new records from API
-* Prevents duplicates at ingestion level
-* Lightweight and optimized for frequent execution
+* Queries latest timestamp (`MAX(time)`)
+* Fetches only new records
+* Prevents duplicates
+* Lightweight and efficient
 
 ---
 
 ### 3. Automation & Orchestration
 
 * Fully automated via GitHub Actions
-* Scheduled execution (e.g., hourly updates)
-* No manual intervention required
-* CI/CD-based pipeline approach
+* Scheduled execution (e.g., hourly)
+* CI/CD-based pipeline
 
 ---
 
 ### 4. Data Visualization
 
-* Interactive dashboard built with Looker Studio
-* Geospatial analysis using map visualizations
-* Magnitude distribution and trend monitoring
-* Public access (no authentication required)
+* Interactive dashboard via Looker Studio
+* Geospatial mapping
+* Trend and magnitude analysis
+* Public access
 
 ---
 
 ## 🔄 Data Pipeline Flow
 
-1. Scheduler triggers incremental pipeline
-2. Script fetches new earthquake data from USGS API
-3. Data is transformed and inserted into PostgreSQL
-4. Dashboard reflects updated data automatically
+1. Scheduler triggers pipeline
+2. Script fetches data from USGS API
+3. Data is transformed and stored
+4. Dashboard updates automatically
 
 ---
 
@@ -134,11 +142,11 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 
 ```id="struct1"
 ├── scripts/
-│   ├── historic_load.py        # Batch ingestion (full load)
-│   ├── incremental_load.py     # Incremental pipeline
+│   ├── historic_load.py
+│   ├── incremental_load.py
 │
 ├── .github/workflows/
-│   └── pipeline.yml            # CI/CD automation
+│   └── pipeline.yml
 │
 ├── requirements.txt
 ├── README.md
@@ -148,26 +156,19 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 
 ## ⚡ Engineering Decisions
 
-* **Incremental Load Strategy:**
-  Reduces API usage and improves performance by only fetching new data
-
-* **Pagination Handling:**
-  Prevents API throttling and ensures full historical coverage
-
-* **Cloud PostgreSQL (Supabase):**
-  Enables scalable and managed storage with SQL access
-
-* **CI/CD Orchestration:**
-  GitHub Actions chosen for simplicity and zero cost
+* **Incremental Load Strategy** — minimizes API usage
+* **Pagination Handling** — ensures full data coverage
+* **Supabase PostgreSQL** — managed, scalable storage
+* **GitHub Actions** — simple, cost-free orchestration
 
 ---
 
 ## 🧠 Challenges & Learnings
 
-* Handling API pagination efficiently
-* Designing idempotent data ingestion
-* Avoiding duplication in incremental loads
-* Structuring a production-like pipeline using free tools
+* Efficient API pagination
+* Idempotent ingestion design
+* Deduplication logic
+* Building production-style pipelines with free tools
 
 ---
 
