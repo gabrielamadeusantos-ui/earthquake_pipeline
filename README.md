@@ -175,4 +175,5 @@ Due to the high volume of seismic data generated globally, it was necessary to i
 ## 👨‍💻 Author
 
 Gabriel Amadeu Santos
+
 Data Analyst
