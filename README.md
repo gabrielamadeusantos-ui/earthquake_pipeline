@@ -2,7 +2,7 @@
 
 End-to-end data pipeline designed to ingest, process, and visualize global earthquake data in near real-time using a fully serverless and cost-free stack.
 
-Project link: https://datastudio.google.com/reporting/a4453d0c-f99f-4d4f-bdfd-2bc443434ed7
+Project link: <a href="https://datastudio.google.com/reporting/a4453d0c-f99f-4d4f-bdfd-2bc443434ed7" target="_blank">https://datastudio.google.com/reporting/a4453d0c-f99f-4d4f-bdfd-2bc443434ed7</a>
 
 ---
 
@@ -21,7 +21,7 @@ This project demonstrates the design and implementation of a production-style da
 ## 🎥 Explanation Video
 
 <p align="center">
-  <a href="https://youtu.be/NdRpZVuqV8Y">
+  <a href="https://youtu.be/NdRpZVuqV8Y" target="_blank">
     <img src="https://img.youtube.com/vi/NdRpZVuqV8Y/0.jpg" alt=""/>
   </a>
 </p>
