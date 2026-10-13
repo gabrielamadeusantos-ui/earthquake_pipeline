@@ -1,4 +1,4 @@
-# 🌍 Real-Time Global Earthquake Monitoring — Data Engineering Project
+# 🌍 Real-Time Global Earthquake Monitoring — Data Engineering Project.
 
 End-to-end data pipeline designed to ingest, process, and visualize global earthquake data in near real-time using a fully serverless and cost-free stack.
 
