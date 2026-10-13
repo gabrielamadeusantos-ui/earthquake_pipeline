@@ -264,7 +264,7 @@ def transform_and_enrich(features: list) -> list:
     return df.to_dict(orient='records')
 
 # ==========================================
-# FUNÇÕES DE CONSULTA EM LOTE
+# FUNÇÕES DE CONSULTA EM LOTES
 # ==========================================
 def fetch_existing_by_ids(ids_list, column, table=TABLE_NAME):
     result = {}
