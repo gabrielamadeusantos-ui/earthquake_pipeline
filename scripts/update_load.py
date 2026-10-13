@@ -197,7 +197,7 @@ def fetch_usgs_incremental(starttime: str) -> list:
     return []
 
 # ==========================================
-# TRANSFORMAÇÃO E ENRIQUECIMENTO
+# TRANSFORMAÇÃO E ENRIQUECIMENTOS
 # ==========================================
 def transform_and_enrich(features: list) -> list:
     if not features:
